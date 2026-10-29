@@ -1,6 +1,6 @@
 # gbus
 
-A small message-bus abstraction for Go, equivalent in intent to `xdmp-bus` (Kafka default; Redis pub/sub support).
+A small message-bus abstraction for Go with Kafka and Redis backends.
 
 > Status: **experimental scaffold** (v0.0.0-dev).
 
