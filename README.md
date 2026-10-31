@@ -36,6 +36,27 @@ handler sees `iothub_raw`. The **consumer group is namespaced too** — two envi
 sharing a group id would steal each other's partitions. An invalid prefix (space, slash,
 colon) fails at construction, not on the first publish.
 
+## Redis Streams driver
+
+The platform's Redis adapter is **Streams, not Pub/Sub** — a stream keeps history and a
+consumer group tracks delivery. The layout matches the Java adapter byte for byte:
+
+| Thing | Value |
+|---|---|
+| stream key | `bus:` + topic (`StreamKeyPrefix`) |
+| payload field | `p`, **Base64** encoded |
+| group | `default` (`Group`), created from id `0` with `MKSTREAM` |
+| read | `XREADGROUP count 100`, blocking `PollBlock` (default 1s) |
+| ack | only after the handler returns `Ack` |
+| claim | `PendingIdle` (default off) + `PendingClaimCount` (100) |
+| headers / key | **not stored** — the Java layout has no place for them |
+
+```go
+producer, _ := redisstream.NewProducer(client, redisstream.Config{})
+consumer, _ := redisstream.NewConsumer(client, redisstream.Config{},
+    redisstream.Subscribe{Topic: "iothub_raw", Group: "iot-app"}, false)
+```
+
 ## Kafka driver
 
 ```go

@@ -50,6 +50,9 @@ type Config struct {
 	// Consumer names this consumer inside the group. Empty derives one from the
 	// topic, group and worker index, matching `c-{topic}-{group}-{i}`.
 	Consumer string
+	// DeadLetterTopic receives rejected entries. Empty means a rejected entry is not
+	// acknowledged, so it stays pending rather than disappearing.
+	DeadLetterTopic string
 	// Metrics receives neutral counters.
 	Metrics gbus.Metrics
 }
