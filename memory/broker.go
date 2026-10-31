@@ -135,7 +135,8 @@ func (b *Broker) Close(context.Context) error {
 	return nil
 }
 
-// Consumer is a subscription over the broker.
+// Consumer is a subscription over the broker. It implements both gbus.Consumer and
+// gbus.BatchConsumer.
 type Consumer struct {
 	broker *Broker
 	cfg    gbus.ConsumerConfig
@@ -232,6 +233,70 @@ func (c *Consumer) Run(ctx context.Context, handler gbus.Handler) error {
 			default:
 				return gbus.Permanent(errors.New("unknown outcome " + string(result.Outcome)))
 			}
+		}
+	}
+}
+
+// RunBatch implements gbus.BatchConsumer: it delivers one record per call, which
+// keeps the contract test honest about the verdict covering a batch.
+func (c *Consumer) RunBatch(ctx context.Context, handler gbus.BatchHandler) error {
+	if handler == nil {
+		return gbus.Permanent(errors.New("batch handler is required"))
+	}
+
+	delivered := map[int32]int64{}
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil
+		}
+
+		records, done := c.nextBatch(delivered)
+		if len(records) == 0 {
+			if done {
+				return nil
+			}
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(time.Millisecond):
+			}
+			continue
+		}
+
+		result := handler.HandleBatch(ctx, records)
+		if c.broker.metrics != nil {
+			c.broker.metrics.Consumed(records[0].Topic, result.Outcome, result.Reason)
+		}
+
+		switch result.Outcome {
+		case gbus.Ack:
+			for _, record := range records {
+				c.commit(record)
+				delivered[record.Partition] = record.Offset + 1
+			}
+		case gbus.Retry:
+			delay := result.RetryAfter
+			if delay <= 0 {
+				delay = c.cfg.Retry.Next(1)
+			}
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(delay):
+			}
+		case gbus.Reject:
+			if c.cfg.DeadLetter == nil {
+				return gbus.Permanent(errors.New("batch rejected and no dead letter queue is configured: " + result.Reason))
+			}
+			for _, record := range records {
+				if err := c.deadLetter(ctx, record, result.Reason); err != nil {
+					return err
+				}
+				c.commit(record)
+				delivered[record.Partition] = record.Offset + 1
+			}
+		default:
+			return gbus.Permanent(errors.New("unknown batch outcome " + string(result.Outcome)))
 		}
 	}
 }

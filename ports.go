@@ -50,6 +50,29 @@ type HandlerFunc func(ctx context.Context, record Record) Result
 // Handle implements Handler.
 func (f HandlerFunc) Handle(ctx context.Context, record Record) Result { return f(ctx, record) }
 
+// BatchHandler processes several records at once, which is what xdmp-bus exposes as
+// BatchMessageHandler. The verdict applies to the whole batch: Ack commits every
+// record in it, Retry commits none.
+type BatchHandler interface {
+	HandleBatch(ctx context.Context, records []Record) Result
+}
+
+// BatchHandlerFunc adapts a function.
+type BatchHandlerFunc func(ctx context.Context, records []Record) Result
+
+// HandleBatch implements BatchHandler.
+func (f BatchHandlerFunc) HandleBatch(ctx context.Context, records []Record) Result {
+	return f(ctx, records)
+}
+
+// BatchConsumer is implemented by consumers that can deliver a poll as one batch.
+//
+// It is a separate interface rather than a Consumer method so a driver that cannot
+// batch is still a valid Consumer.
+type BatchConsumer interface {
+	RunBatch(ctx context.Context, handler BatchHandler) error
+}
+
 // Consumer runs a subscription. Run blocks until the context is cancelled or a
 // fatal error occurs; only one Run may be active per consumer.
 type Consumer interface {

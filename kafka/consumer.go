@@ -281,6 +281,99 @@ func (c *Consumer) deadLetter(ctx context.Context, record gbus.Record, reason st
 	return err
 }
 
+// RunBatch implements gbus.BatchConsumer.
+//
+// One poll is handed to the handler as a batch; the verdict covers the whole poll, so
+// a partial failure must be reported as Retry rather than Ack.
+func (c *Consumer) RunBatch(ctx context.Context, handler gbus.BatchHandler) error {
+	if handler == nil {
+		return fmt.Errorf("%w: batch handler is required", gbus.ErrPermanent)
+	}
+
+	c.mu.Lock()
+	if c.running {
+		c.mu.Unlock()
+		return fmt.Errorf("%w: consumer is already running", gbus.ErrPermanent)
+	}
+	c.running = true
+	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		c.running = false
+		c.mu.Unlock()
+	}()
+
+	for {
+		if err := ctx.Err(); err != nil {
+			commitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = c.client.CommitUncommittedOffsets(commitCtx)
+			cancel()
+			return nil
+		}
+
+		fetches := c.client.PollFetches(ctx)
+		if fetches.IsClientClosed() {
+			return nil
+		}
+		if err := ctx.Err(); err != nil {
+			continue
+		}
+
+		var records []gbus.Record
+		var offsets []*kgo.Record
+		fetches.EachRecord(func(record *kgo.Record) {
+			incoming := toRecord(record, 1)
+			incoming.Topic = c.namer.Strip(record.Topic)
+			records = append(records, incoming)
+			offsets = append(offsets, record)
+		})
+		if len(records) == 0 {
+			continue
+		}
+
+		result := handler.HandleBatch(ctx, records)
+		if c.cfg.Metrics != nil {
+			c.cfg.Metrics.Consumed(records[0].Topic, result.Outcome, result.Reason)
+		}
+
+		switch result.Outcome {
+		case gbus.Ack:
+			if err := c.client.CommitRecords(ctx, offsets...); err != nil {
+				return fmt.Errorf("gbus/kafka: batch commit: %w", classify(err))
+			}
+		case gbus.Retry:
+			// Leave the offsets uncommitted: the batch is redelivered.
+			if c.cfg.Metrics != nil {
+				c.cfg.Metrics.Retried(records[0].Topic, 1)
+			}
+			delay := result.RetryAfter
+			if delay <= 0 {
+				delay = c.cfg.Retry.Next(1)
+			}
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(delay):
+			}
+		case gbus.Reject:
+			if c.producer == nil {
+				return fmt.Errorf("%w: batch rejected and no dead letter queue is configured: %s", gbus.ErrPermanent, result.Reason)
+			}
+			for i, record := range records {
+				if err := c.deadLetter(ctx, record, result.Reason); err != nil {
+					return fmt.Errorf("gbus/kafka: batch dead letter: %w", err)
+				}
+				_ = i
+			}
+			if err := c.client.CommitRecords(ctx, offsets...); err != nil {
+				return fmt.Errorf("gbus/kafka: batch commit: %w", classify(err))
+			}
+		default:
+			return fmt.Errorf("%w: unknown batch outcome %q", gbus.ErrPermanent, result.Outcome)
+		}
+	}
+}
+
 // Close implements gbus.Consumer.
 func (c *Consumer) Close(ctx context.Context) error {
 	c.mu.Lock()
@@ -302,4 +395,7 @@ func (c *Consumer) Close(ctx context.Context) error {
 	return nil
 }
 
-var _ gbus.Consumer = (*Consumer)(nil)
+var (
+	_ gbus.Consumer      = (*Consumer)(nil)
+	_ gbus.BatchConsumer = (*Consumer)(nil)
+)
