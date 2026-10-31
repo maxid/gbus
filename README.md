@@ -58,11 +58,10 @@ consumer, _ := redisstream.NewConsumer(client, redisstream.Config{},
 ```
 
 The zero config keeps the Java-compatible `bus:` prefix. When several
-applications share Redis, set `Namespace` or use `UseNamespace(set)`:
+applications share Redis, set the plain `Namespace` field:
 
 ```go
-cfg := redisstream.Config{}
-cfg.UseNamespace(set) // app:bus:<topic>
+cfg := redisstream.Config{Namespace: "app"} // app:bus:<topic>
 ```
 
 An explicit `StreamKeyPrefix` wins over `Namespace`, which keeps a Java/Go

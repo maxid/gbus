@@ -3,8 +3,6 @@ package gbus
 import (
 	"fmt"
 	"strings"
-
-	"github.com/maxid/gns"
 )
 
 // Namer maps logical names onto the physical ones a shared Kafka cluster uses.
@@ -61,7 +59,7 @@ func (n Namer) join(logical string) string {
 	if n.Prefix == "" || logical == "" {
 		return logical
 	}
-	return gns.Join(n.Separator, n.Prefix, logical)
+	return strings.Trim(n.Prefix, n.Separator) + n.Separator + strings.Trim(logical, n.Separator)
 }
 
 // validateKafkaName rejects the characters Kafka disallows in topic names.

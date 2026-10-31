@@ -2,8 +2,6 @@ package redisstream
 
 import (
 	"testing"
-
-	"github.com/maxid/gns"
 )
 
 func TestNamespaceStreamKey(t *testing.T) {
@@ -19,9 +17,8 @@ func TestNamespaceStreamKey(t *testing.T) {
 	}
 }
 
-func TestUseNamespace(t *testing.T) {
-	cfg := Config{}
-	cfg.UseNamespace(gns.Set{Cache: "app"})
+func TestNamespaceField(t *testing.T) {
+	cfg := Config{Namespace: "app"}
 	if err := cfg.Normalize(); err != nil {
 		t.Fatal(err)
 	}
