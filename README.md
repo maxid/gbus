@@ -1,3 +1,5 @@
+English | [简体中文](README.zh-CN.md)
+
 # gbus
 
 A small message-bus abstraction for Go with Kafka and Redis backends.
