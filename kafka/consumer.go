@@ -32,12 +32,16 @@ type ConsumerConfig struct {
 	Retry           gbus.BackoffPolicy
 	DeadLetter      *gbus.DeadLetterConfig
 	Metrics         gbus.Metrics
+	// Namespace prefixes topics, the group and the dead-letter topic.
+	Namespace          string
+	NamespaceSeparator string
 }
 
 // Consumer is a gbus.Consumer backed by a Kafka consumer group.
 type Consumer struct {
 	client   *kgo.Client
 	cfg      ConsumerConfig
+	namer    gbus.Namer
 	producer *Producer
 
 	mu      sync.Mutex
@@ -67,15 +71,27 @@ func NewConsumer(cfg ConsumerConfig) (*Consumer, error) {
 		cfg.MaxMessageBytes = int32(gbus.DefaultMaxMessageBytes)
 	}
 
+	namer, err := gbus.NewNamer(cfg.Namespace, cfg.NamespaceSeparator)
+	if err != nil {
+		return nil, err
+	}
+
 	start := kgo.NewOffset().AtStart()
 	if cfg.StartFrom == "latest" {
 		start = kgo.NewOffset().AtEnd()
 	}
 
+	physicalTopics := make([]string, 0, len(cfg.Topics))
+	for _, topic := range cfg.Topics {
+		physicalTopics = append(physicalTopics, namer.Topic(topic))
+	}
+
 	opts := []kgo.Opt{
 		kgo.SeedBrokers(cfg.Brokers...),
-		kgo.ConsumerGroup(cfg.Group),
-		kgo.ConsumeTopics(cfg.Topics...),
+		// The group is namespaced too: two environments sharing a cluster and a group
+		// id would steal each other's partitions.
+		kgo.ConsumerGroup(namer.Group(cfg.Group)),
+		kgo.ConsumeTopics(physicalTopics...),
 		kgo.ConsumeResetOffset(start),
 		// The library commits explicitly; automatic commits would advance past a
 		// record whose handler has not acknowledged it.
@@ -94,7 +110,7 @@ func NewConsumer(cfg ConsumerConfig) (*Consumer, error) {
 		return nil, fmt.Errorf("gbus/kafka: consumer: %w", err)
 	}
 
-	c := &Consumer{client: client, cfg: cfg}
+	c := &Consumer{client: client, cfg: cfg, namer: namer}
 	if cfg.DeadLetter != nil {
 		producer, err := NewProducer(ProducerConfig{
 			Brokers:  cfg.Brokers,
@@ -172,6 +188,8 @@ func (c *Consumer) Run(ctx context.Context, handler gbus.Handler) error {
 			attempts[key]++
 
 			incoming := toRecord(record, attempts[key])
+			// Handlers see the logical name; the prefix is a deployment detail.
+			incoming.Topic = c.namer.Strip(record.Topic)
 			if len(incoming.Value) > int(c.cfg.MaxMessageBytes) {
 				// Too large to hand over: dead-letter it if configured, otherwise stop.
 				if c.producer == nil {
@@ -253,6 +271,8 @@ func (c *Consumer) deadLetter(ctx context.Context, record gbus.Record, reason st
 	// A rejected record must still be written while shutting down.
 	publishCtx := context.WithoutCancel(ctx)
 	_, err := c.producer.Publish(publishCtx, gbus.Message{
+		// The producer applies its own namespace; passing the logical name avoids a
+		// doubly-prefixed dead-letter topic.
 		Topic:   c.cfg.DeadLetter.Topic,
 		Key:     record.Key,
 		Value:   record.Value,

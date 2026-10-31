@@ -18,6 +18,24 @@ A small message-bus abstraction for Go with Kafka and Redis backends.
 - Redis pub/sub adapter
 - Batch handlers, ack/retry semantics
 
+## Namespaces
+
+Several environments usually share one cluster, so topic and consumer-group names carry
+a namespace prefix. Business code keeps the logical name:
+
+```go
+producer, _ := kafka.NewProducer(kafka.ProducerConfig{
+    Brokers:   []string{"kafka:9092"},
+    Namespace: "xdmp-dev",   // separator defaults to "."
+})
+producer.Publish(ctx, gbus.Message{Topic: "iothub_raw", ...})   // -> xdmp-dev.iothub_raw
+```
+
+The prefix is applied at the driver boundary and **stripped again on delivery**, so a
+handler sees `iothub_raw`. The **consumer group is namespaced too** — two environments
+sharing a group id would steal each other's partitions. An invalid prefix (space, slash,
+colon) fails at construction, not on the first publish.
+
 ## Kafka driver
 
 ```go
@@ -31,6 +49,9 @@ consumer, _ := kafka.NewConsumer(kafka.ConsumerConfig{
 consumer commits **explicitly** (`DisableAutoCommit`): an offset advances only after
 `Ack`, or after a rejected record reached the dead-letter topic. `Retry` pauses the
 partition instead of hot-looping.
+
+franz-go negotiates protocol versions automatically, so one binary works against Kafka
+**0.8 through 3.x/4.x**; no per-cluster version pinning is required.
 
 Error classification uses Kafka's own error table (`kerr.Error.Retriable`), not the
 message text — which is why `UNKNOWN_TOPIC_OR_PARTITION` counts as retryable (the

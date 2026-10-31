@@ -23,6 +23,11 @@ type ProducerConfig struct {
 	Idempotent      bool
 	MaxMessageBytes int
 	RequestTimeout  time.Duration
+	// Namespace prefixes topic names when several environments share one cluster.
+	// Empty means the deployment owns the cluster.
+	Namespace string
+	// NamespaceSeparator defaults to ".".
+	NamespaceSeparator string
 	// Metrics receives neutral counters.
 	Metrics gbus.Metrics
 }
@@ -32,6 +37,7 @@ type ProducerConfig struct {
 type Producer struct {
 	client   *kgo.Client
 	cfg      ProducerConfig
+	namer    gbus.Namer
 	maxBytes int64
 	closed   bool
 }
@@ -65,11 +71,16 @@ func NewProducer(cfg ProducerConfig) (*Producer, error) {
 	}
 	opts = append(opts, kgo.ProducerBatchMaxBytes(int32(maxBytes)))
 
+	namer, err := gbus.NewNamer(cfg.Namespace, cfg.NamespaceSeparator)
+	if err != nil {
+		return nil, err
+	}
+
 	client, err := kgo.NewClient(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("gbus/kafka: producer: %w", err)
 	}
-	return &Producer{client: client, cfg: cfg, maxBytes: int64(maxBytes)}, nil
+	return &Producer{client: client, cfg: cfg, namer: namer, maxBytes: int64(maxBytes)}, nil
 }
 
 // Publish implements gbus.Producer.
@@ -81,7 +92,15 @@ func (p *Producer) Publish(ctx context.Context, message gbus.Message) (gbus.Publ
 		return gbus.PublishMetadata{}, err
 	}
 
-	record := fromMessage(message)
+	// The logical topic from the caller becomes the physical one here, and only here.
+	logicalTopic := message.Topic
+	record := fromMessage(gbus.Message{
+		Topic:     p.namer.Topic(message.Topic),
+		Key:       message.Key,
+		Value:     message.Value,
+		Headers:   message.Headers,
+		Timestamp: message.Timestamp,
+	})
 	// ProduceSync blocks until the broker acknowledges every record, which is what
 	// makes a nil error meaningful.
 	results := p.client.ProduceSync(ctx, record)
@@ -94,11 +113,11 @@ func (p *Producer) Publish(ctx context.Context, message gbus.Message) (gbus.Publ
 	}
 
 	if p.cfg.Metrics != nil {
-		p.cfg.Metrics.Published(message.Topic, len(message.Value), nil)
+		p.cfg.Metrics.Published(logicalTopic, len(message.Value), nil)
 	}
 	produced := results[0].Record
 	return gbus.PublishMetadata{
-		Topic:     produced.Topic,
+		Topic:     logicalTopic,
 		Partition: produced.Partition,
 		Offset:    produced.Offset,
 		Timestamp: produced.Timestamp,
