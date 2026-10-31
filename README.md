@@ -57,6 +57,17 @@ consumer, _ := redisstream.NewConsumer(client, redisstream.Config{},
     redisstream.Subscribe{Topic: "iothub_raw", Group: "iot-app"}, false)
 ```
 
+The zero config keeps the Java-compatible `bus:` prefix. When several
+applications share Redis, set `Namespace` or use `UseNamespace(set)`:
+
+```go
+cfg := redisstream.Config{}
+cfg.UseNamespace(set) // app:bus:<topic>
+```
+
+An explicit `StreamKeyPrefix` wins over `Namespace`, which keeps a Java/Go
+dual-run on the same stream possible.
+
 ## Kafka driver
 
 ```go

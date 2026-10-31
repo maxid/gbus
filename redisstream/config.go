@@ -9,9 +9,11 @@ package redisstream
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/maxid/gbus"
+	"github.com/maxid/gns"
 )
 
 // Defaults copied from PlatformMessageBusProperties.Redis.
@@ -37,6 +39,9 @@ const (
 type Config struct {
 	// StreamKeyPrefix precedes the topic to form the stream key.
 	StreamKeyPrefix string
+	// Namespace is the gns cache namespace. When set and StreamKeyPrefix is
+	// empty, keys become "<namespace>:bus:<topic>"; an explicit prefix wins.
+	Namespace string
 	// Group is the consumer group created when missing.
 	Group string
 	// PollBlock is how long XREADGROUP blocks; a non-positive value polls without
@@ -59,6 +64,10 @@ type Config struct {
 
 // Normalize fills the Java defaults and validates the result.
 func (c *Config) Normalize() error {
+	c.Namespace = strings.TrimSpace(c.Namespace)
+	if c.StreamKeyPrefix == "" && c.Namespace != "" {
+		c.StreamKeyPrefix = gns.Join(":", c.Namespace, "bus") + ":"
+	}
 	if c.StreamKeyPrefix == "" {
 		c.StreamKeyPrefix = DefaultStreamKeyPrefix
 	}
@@ -75,6 +84,12 @@ func (c *Config) Normalize() error {
 		return fmt.Errorf("%w: pending idle must not be negative", gbus.ErrPermanent)
 	}
 	return nil
+}
+
+// UseNamespace sets the stream key prefix from a gns set:
+// "<cache>:bus:". Call it before constructing a producer or consumer.
+func (c *Config) UseNamespace(set gns.Set) {
+	c.StreamKeyPrefix = set.RedisKey("bus") + ":"
 }
 
 // streamKey is the Java `streamKeyPrefix + topic`.
