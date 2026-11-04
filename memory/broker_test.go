@@ -309,3 +309,51 @@ func TestErrorClassification(t *testing.T) {
 		t.Fatal("an unclassified error defaults to permanent")
 	}
 }
+
+func TestConsumerLag(t *testing.T) {
+	broker := memory.New()
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		if _, err := broker.Publish(ctx, gbus.Message{Topic: "raw", Value: []byte("v")}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	consumer, err := broker.NewConsumer(gbus.ConsumerConfig{Group: "g1", Topics: []string{"raw"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var _ gbus.LagReporter = consumer
+
+	lag, err := consumer.Lag(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lag) != 1 || lag[0].Topic != "raw" || lag[0].Partition != 0 ||
+		lag[0].End != 3 || lag[0].Committed != 0 || lag[0].Lag != 3 {
+		t.Fatalf("lag = %+v", lag)
+	}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = consumer.Run(runCtx, gbus.HandlerFunc(func(_ context.Context, record gbus.Record) gbus.Result {
+			if record.Offset == 1 {
+				cancel()
+			}
+			return gbus.Result{Outcome: gbus.Ack}
+		}))
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("consumer did not stop")
+	}
+	lag, err = consumer.Lag(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lag) != 1 || lag[0].Committed != 2 || lag[0].End != 3 || lag[0].Lag != 1 {
+		t.Fatalf("lag after two acks = %+v", lag)
+	}
+}

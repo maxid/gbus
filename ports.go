@@ -122,6 +122,23 @@ type DeadLetterConfig struct {
 	MaxAttempts int
 }
 
+// PartitionLag is one partition's consumer lag snapshot. End is the next
+// offset the broker will assign; Committed is the group's committed position.
+type PartitionLag struct {
+	Topic     string
+	Partition int32
+	Committed int64
+	End       int64
+	Lag       int64
+}
+
+// LagReporter is implemented by consumers that can report lag. Drivers whose
+// protocol cannot answer cheaply do not implement it; callers must type-assert
+// instead of assuming every consumer can.
+type LagReporter interface {
+	Lag(ctx context.Context) ([]PartitionLag, error)
+}
+
 // ConsumerConfig bounds one subscription.
 type ConsumerConfig struct {
 	// Group and Topics are required: a wildcard subscription that discovers topics

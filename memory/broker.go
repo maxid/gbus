@@ -237,6 +237,41 @@ func (c *Consumer) Run(ctx context.Context, handler gbus.Handler) error {
 	}
 }
 
+// Lag implements gbus.LagReporter for the in-memory broker.
+func (c *Consumer) Lag(ctx context.Context) ([]gbus.PartitionLag, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	c.broker.mu.Lock()
+	defer c.broker.mu.Unlock()
+
+	var out []gbus.PartitionLag
+	for _, topicName := range c.cfg.Topics {
+		t, ok := c.broker.topics[topicName]
+		if !ok {
+			continue
+		}
+		partitions := make([]int32, 0, len(t.partitions))
+		for partition := range t.partitions {
+			partitions = append(partitions, partition)
+		}
+		sort.Slice(partitions, func(i, j int) bool { return partitions[i] < partitions[j] })
+		for _, partition := range partitions {
+			end := int64(len(t.partitions[partition]))
+			committed := t.committed[c.cfg.Group][partition]
+			lag := end - committed
+			if lag < 0 {
+				lag = 0
+			}
+			out = append(out, gbus.PartitionLag{
+				Topic: topicName, Partition: partition,
+				Committed: committed, End: end, Lag: lag,
+			})
+		}
+	}
+	return out, nil
+}
+
 // RunBatch implements gbus.BatchConsumer: it delivers one record per call, which
 // keeps the contract test honest about the verdict covering a batch.
 func (c *Consumer) RunBatch(ctx context.Context, handler gbus.BatchHandler) error {
