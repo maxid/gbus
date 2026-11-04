@@ -217,3 +217,28 @@ func TestProducerRequiresClient(t *testing.T) {
 		t.Fatal("missing topic must fail")
 	}
 }
+
+func TestConsumerLag(t *testing.T) {
+	server, client := newClient(t)
+	defer server.Close()
+	producer, _ := redisstream.NewProducer(client, redisstream.Config{})
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		if _, err := producer.Publish(ctx, gbus.Message{Topic: "raw", Value: []byte("v")}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	consumer, err := redisstream.NewConsumer(client, redisstream.Config{}, redisstream.Subscribe{Topic: "raw", Group: "g1"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var _ gbus.LagReporter = consumer
+	lag, err := consumer.Lag(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lag) != 1 || lag[0].Topic != "raw" || lag[0].Partition != 0 ||
+		lag[0].End != 3 || lag[0].Committed != 0 || lag[0].Lag != 3 {
+		t.Fatalf("lag = %+v", lag)
+	}
+}

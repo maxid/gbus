@@ -147,6 +147,54 @@ func (c *Consumer) Run(ctx context.Context, handler gbus.Handler) error {
 	})
 }
 
+// Lag implements gbus.LagReporter for one Redis Stream consumer group. Redis 7
+// reports the group lag directly; older servers that cannot are represented by
+// entries read so callers still get a monotonic position.
+func (c *Consumer) Lag(ctx context.Context) ([]gbus.PartitionLag, error) {
+	key := c.cfg.streamKey(c.topic)
+	info, err := c.client.XInfoStream(ctx, key).Result()
+	if err != nil {
+		if errors.Is(err, goredis.Nil) {
+			return nil, nil
+		}
+		return nil, classify(err)
+	}
+	end := info.EntriesAdded
+	if end < info.Length {
+		// Some servers/proxies do not populate entries-added; length is the
+		// best conservative position available there.
+		end = info.Length
+	}
+	committed := int64(0)
+	lag := end
+	groups, err := c.client.XInfoGroups(ctx, key).Result()
+	if err != nil {
+		return nil, classify(err)
+	}
+	for _, group := range groups {
+		if group.Name != c.cfg.Group {
+			continue
+		}
+		if group.Lag >= 0 {
+			lag = group.Lag
+			committed = end - lag
+		} else {
+			committed = group.EntriesRead
+			lag = end - committed
+		}
+		break
+	}
+	if lag < 0 {
+		lag = 0
+	}
+	if committed < 0 {
+		committed = 0
+	}
+	return []gbus.PartitionLag{{
+		Topic: c.topic, Partition: 0, Committed: committed, End: end, Lag: lag,
+	}}, nil
+}
+
 // RunBatch implements gbus.BatchConsumer: one poll becomes one call, and the whole
 // batch is acknowledged only when the handler returns Ack — the Java
 // processMessageBatchAsBatch behaviour.
